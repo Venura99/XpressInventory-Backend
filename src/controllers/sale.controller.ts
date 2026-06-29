@@ -67,6 +67,32 @@ export const createSale = async (
   }
 };
 
+export const updateSale = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const sale = await saleService.updateSale(req.params.id, req.body);
+    sendSuccess(res, sale, 'Sale updated successfully');
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteSale = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    await saleService.deleteSale(req.params.id);
+    sendSuccess(res, null, 'Sale deleted successfully');
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const uploadChequeImage = async (
   req: AuthRequest,
   res: Response,

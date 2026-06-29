@@ -16,7 +16,7 @@ import {
   deleteDelivery,
 } from '../controllers/delivery.controller';
 
-const router = Router();
+const router = Router(); 
 
 router.use(authenticate);
 

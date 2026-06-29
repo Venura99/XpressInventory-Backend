@@ -15,11 +15,25 @@ export interface CreateSaleItemDto {
   discount?: number;
 }
 
+export interface UpdateSaleDto {
+  discountPercent?: number;
+  discountAmount?: number;
+  deliveryFee?: number;
+  isFreeDelivery?: boolean;
+  paymentMethod?: 'cash' | 'card' | 'bank_transfer' | 'cheque' | 'city_ledger';
+  paymentStatus?: 'paid' | 'partial' | 'pending';
+  amountPaid?: number;
+  notes?: string;
+  saleDate?: string;
+}
+
 export interface CreateSaleDto {
   customer: string;
   items: CreateSaleItemDto[];
   discountPercent?: number;
   discountAmount?: number;
+  deliveryFee?: number;
+  isFreeDelivery?: boolean;
   paymentMethod?: 'cash' | 'card' | 'bank_transfer' | 'cheque' | 'city_ledger';
   paymentStatus?: 'paid' | 'partial' | 'pending';
   amountPaid?: number;
@@ -89,8 +103,16 @@ export class SaleService {
       if (discountPercent > 0 && discountAmount === 0) {
         discountAmount = subtotal * (discountPercent / 100);
       }
-      const totalAmount = Math.max(0, subtotal - discountAmount);
-      const totalProfit = totalAmount - totalCost;
+      const deliveryFee = data.deliveryFee ?? 0;
+      const isFreeDelivery = data.isFreeDelivery ?? false;
+      // Free delivery: customer pays subtotal-discount only; delivery cost reduces our profit
+      // Paid delivery: customer pays subtotal-discount+deliveryFee; delivery fee is revenue
+      const totalAmount = isFreeDelivery
+        ? Math.max(0, subtotal - discountAmount)
+        : Math.max(0, subtotal - discountAmount + deliveryFee);
+      const totalProfit = isFreeDelivery
+        ? totalAmount - totalCost - deliveryFee
+        : totalAmount - totalCost;
       const saleDate = data.saleDate ? new Date(data.saleDate) : new Date();
       const amountPaid = data.amountPaid ?? totalAmount;
 
@@ -103,6 +125,8 @@ export class SaleService {
             subtotal,
             discountAmount,
             discountPercent,
+            deliveryFee,
+            isFreeDelivery,
             totalAmount,
             totalProfit,
             totalCost,
@@ -244,6 +268,87 @@ export class SaleService {
       .lean();
     if (!sale) throw new AppError('Sale not found', 404);
     return sale as unknown as ISale;
+  }
+
+  async updateSale(id: string, data: UpdateSaleDto): Promise<ISale> {
+    const sale = await Sale.findById(id);
+    if (!sale) throw new AppError('Sale not found', 404);
+
+    const subtotal = sale.subtotal;
+    const discountPercent = data.discountPercent ?? sale.discountPercent;
+    let discountAmount = data.discountAmount ?? sale.discountAmount;
+    if (data.discountPercent !== undefined && data.discountAmount === undefined) {
+      discountAmount = subtotal * (discountPercent / 100);
+    }
+    const deliveryFee = data.deliveryFee ?? sale.deliveryFee ?? 0;
+    const isFreeDelivery = data.isFreeDelivery ?? sale.isFreeDelivery ?? false;
+    const totalAmount = isFreeDelivery
+      ? Math.max(0, subtotal - discountAmount)
+      : Math.max(0, subtotal - discountAmount + deliveryFee);
+    const totalProfit = isFreeDelivery
+      ? totalAmount - sale.totalCost - deliveryFee
+      : totalAmount - sale.totalCost;
+
+    const updated = await Sale.findByIdAndUpdate(
+      id,
+      {
+        discountPercent,
+        discountAmount,
+        deliveryFee,
+        isFreeDelivery,
+        totalAmount,
+        totalProfit,
+        paymentMethod: data.paymentMethod ?? sale.paymentMethod,
+        paymentStatus: data.paymentStatus ?? sale.paymentStatus,
+        amountPaid: data.amountPaid ?? sale.amountPaid,
+        notes: data.notes !== undefined ? data.notes : sale.notes,
+        saleDate: data.saleDate ? new Date(data.saleDate) : sale.saleDate,
+      },
+      { new: true }
+    )
+      .populate('customer', 'name phone whatsapp email address')
+      .populate('soldBy', 'name')
+      .lean();
+
+    return updated as unknown as ISale;
+  }
+
+  async deleteSale(id: string): Promise<void> {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const sale = await Sale.findById(id).session(session);
+      if (!sale) throw new AppError('Sale not found', 404);
+
+      // Restore stock for each item
+      for (const item of sale.items) {
+        await Product.findByIdAndUpdate(
+          item.product,
+          { $inc: { stockQuantity: item.quantity } },
+          { session }
+        );
+      }
+
+      // Remove warranty records created by this sale
+      await Warranty.deleteMany({ sale: id }, { session });
+
+      // Reverse customer stats
+      await Customer.findByIdAndUpdate(
+        sale.customer,
+        { $inc: { totalPurchases: -1, totalSpent: -sale.totalAmount } },
+        { session }
+      );
+
+      await Sale.findByIdAndDelete(id, { session });
+
+      await session.commitTransaction();
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
   }
 
   async updateChequeImage(saleId: string, url: string): Promise<ISale> {

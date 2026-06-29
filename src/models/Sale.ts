@@ -20,6 +20,8 @@ export interface ISale extends Document {
   subtotal: number;
   discountAmount: number;
   discountPercent: number;
+  deliveryFee: number;
+  isFreeDelivery: boolean;
   totalAmount: number;
   totalProfit: number;
   totalCost: number;
@@ -63,6 +65,8 @@ const saleSchema = new Schema<ISale>(
     subtotal: { type: Number, required: true, min: 0 },
     discountAmount: { type: Number, default: 0, min: 0 },
     discountPercent: { type: Number, default: 0, min: 0, max: 100 },
+    deliveryFee: { type: Number, default: 0, min: 0 },
+    isFreeDelivery: { type: Boolean, default: false },
     totalAmount: { type: Number, required: true, min: 0 },
     totalProfit: { type: Number, required: true },
     totalCost: { type: Number, required: true, min: 0 },
