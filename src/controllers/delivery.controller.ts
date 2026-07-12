@@ -10,7 +10,7 @@ export const getDeliveries = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const { page = 1, limit = 20, search, status, courierCompany, sortField, sortOrder } =
+    const { page = 1, limit = 20, search, status, courierCompany, remittanceStatus, sortField, sortOrder } =
       req.query;
 
     const { deliveries, pagination } = await deliveryService.findAll({
@@ -19,6 +19,7 @@ export const getDeliveries = async (
       search: search as string,
       status: status as string,
       courierCompany: courierCompany as string,
+      remittanceStatus: remittanceStatus as string,
       sortField: sortField as string,
       sortOrder: sortOrder as 'asc' | 'desc',
     });
@@ -42,14 +43,37 @@ export const getDelivery = async (
   }
 };
 
+export const getCodSummary = async (
+  _req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const summary = await deliveryService.getCodSummary();
+    sendSuccess(res, summary, 'COD summary retrieved');
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const createDelivery = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
-    const { saleId, courierCompany, trackingNumber, deliveryAddress, estimatedDelivery, notes } =
-      req.body;
+    const {
+      saleId,
+      courierCompany,
+      trackingNumber,
+      deliveryAddress,
+      estimatedDelivery,
+      notes,
+      courierChargeToCustomer,
+      actualCourierCost,
+      isCOD,
+      codAmountExpected,
+    } = req.body;
 
     const delivery = await deliveryService.create({
       saleId,
@@ -58,6 +82,10 @@ export const createDelivery = async (
       deliveryAddress,
       estimatedDelivery,
       notes,
+      courierChargeToCustomer,
+      actualCourierCost,
+      isCOD,
+      codAmountExpected,
       userId: req.user!.id,
     });
 
@@ -73,13 +101,27 @@ export const updateDelivery = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const { courierCompany, trackingNumber, deliveryAddress, estimatedDelivery, notes } = req.body;
+    const {
+      courierCompany,
+      trackingNumber,
+      deliveryAddress,
+      estimatedDelivery,
+      notes,
+      courierChargeToCustomer,
+      actualCourierCost,
+      isCOD,
+      codAmountExpected,
+    } = req.body;
     const delivery = await deliveryService.update(req.params['id'], {
       courierCompany: courierCompany as CourierCompany | undefined,
       trackingNumber,
       deliveryAddress,
       estimatedDelivery,
       notes,
+      courierChargeToCustomer,
+      actualCourierCost,
+      isCOD,
+      codAmountExpected,
     });
     sendSuccess(res, delivery, 'Delivery updated');
   } catch (error) {
@@ -93,14 +135,36 @@ export const updateDeliveryStatus = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const { status, note } = req.body;
+    const { status, note, returnShippingCost, returnReason } = req.body;
+    const returnDetails =
+      status === 'returned' ? { returnShippingCost: Number(returnShippingCost), returnReason } : undefined;
+
     const delivery = await deliveryService.updateStatus(
       req.params['id'],
       status as DeliveryStatus,
       note,
-      req.user!.id
+      req.user!.id,
+      returnDetails
     );
     sendSuccess(res, delivery, 'Status updated');
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const recordRemittance = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { amountRemitted, remittedDate, notes } = req.body;
+    const delivery = await deliveryService.recordRemittance(req.params['id'], {
+      amountRemitted: Number(amountRemitted),
+      remittedDate,
+      notes,
+    });
+    sendSuccess(res, delivery, 'Remittance recorded');
   } catch (error) {
     next(error);
   }

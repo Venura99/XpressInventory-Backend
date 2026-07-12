@@ -2,6 +2,7 @@ import { Sale } from '../models/Sale';
 import { Product } from '../models/Product';
 import { Warranty } from '../models/Warranty';
 import { Expense } from '../models/Expense';
+import { Delivery } from '../models/Delivery';
 
 class DashboardService {
   async getData() {
@@ -20,6 +21,9 @@ class DashboardService {
       todaySales,
       monthSales,
       monthExpensesAgg,
+      monthCourierAgg,
+      monthReturnsAgg,
+      codPendingAgg,
       outstandingAgg,
       lowStockCount,
       activeWarranties,
@@ -28,15 +32,15 @@ class DashboardService {
       recentSales,
       lowStockProducts,
     ] = await Promise.all([
-      // Today's revenue + order count
+      // Today's revenue + order count (excludes returned sales)
       Sale.aggregate<{ revenue: number; profit: number; orders: number }>([
-        { $match: { saleDate: { $gte: todayStart } } },
+        { $match: { saleDate: { $gte: todayStart }, isReturned: false } },
         { $group: { _id: null, revenue: { $sum: '$totalAmount' }, profit: { $sum: '$totalProfit' }, orders: { $sum: 1 } } },
       ]),
 
-      // This month's revenue + profit
+      // This month's revenue + profit (excludes returned sales)
       Sale.aggregate<{ revenue: number; profit: number; orders: number }>([
-        { $match: { saleDate: { $gte: monthStart } } },
+        { $match: { saleDate: { $gte: monthStart }, isReturned: false } },
         { $group: { _id: null, revenue: { $sum: '$totalAmount' }, profit: { $sum: '$totalProfit' }, orders: { $sum: 1 } } },
       ]),
 
@@ -44,6 +48,30 @@ class DashboardService {
       Expense.aggregate<{ total: number }>([
         { $match: { date: { $gte: monthStart } } },
         { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+
+      // This month's real courier cost (all deliveries created this month)
+      Delivery.aggregate<{ total: number }>([
+        { $match: { createdAt: { $gte: monthStart } } },
+        { $group: { _id: null, total: { $sum: '$actualCourierCost' } } },
+      ]),
+
+      // This month's returned orders + return shipping loss
+      Promise.all([
+        Sale.aggregate<{ count: number }>([
+          { $match: { saleDate: { $gte: monthStart }, isReturned: true } },
+          { $group: { _id: null, count: { $sum: 1 } } },
+        ]),
+        Delivery.aggregate<{ shippingLoss: number }>([
+          { $match: { createdAt: { $gte: monthStart }, status: 'returned' } },
+          { $group: { _id: null, shippingLoss: { $sum: '$returnShippingCost' } } },
+        ]),
+      ]),
+
+      // All-time COD cash still pending from the courier
+      Delivery.aggregate<{ pending: number }>([
+        { $match: { isCOD: true, remittanceStatus: { $in: ['pending', 'partial'] } } },
+        { $group: { _id: null, pending: { $sum: { $subtract: ['$codAmountExpected', '$codAmountRemitted'] } } } },
       ]),
 
       // Outstanding balance (pending + partial sales)
@@ -67,9 +95,9 @@ class DashboardService {
       // Active warranty count
       Warranty.countDocuments({ status: 'active' }),
 
-      // Daily sales for last 30 days
+      // Daily sales for last 30 days (excludes returned sales)
       Sale.aggregate<{ _id: string; revenue: number; profit: number; orders: number }>([
-        { $match: { saleDate: { $gte: thirtyDaysAgo } } },
+        { $match: { saleDate: { $gte: thirtyDaysAgo }, isReturned: false } },
         {
           $group: {
             _id: { $dateToString: { format: '%Y-%m-%d', date: '$saleDate' } },
@@ -107,16 +135,27 @@ class DashboardService {
     ]);
 
     const monthRevenueVal = monthSales[0]?.revenue ?? 0;
+    const monthGrossProfitVal = monthSales[0]?.profit ?? 0;
     const monthExpensesVal = monthExpensesAgg[0]?.total ?? 0;
+    const monthCourierCostVal = monthCourierAgg[0]?.total ?? 0;
+    const [monthReturnedCountAgg, monthReturnShippingAgg] = monthReturnsAgg;
+    const monthReturnedOrders = monthReturnedCountAgg[0]?.count ?? 0;
+    const monthReturnLoss = monthReturnShippingAgg[0]?.shippingLoss ?? 0;
+
+    const netProfit = monthGrossProfitVal - monthCourierCostVal - monthReturnLoss - monthExpensesVal;
 
     return {
       kpis: {
         todayRevenue: todaySales[0]?.revenue ?? 0,
         todayOrders: todaySales[0]?.orders ?? 0,
         monthRevenue: monthRevenueVal,
-        monthProfit: monthSales[0]?.profit ?? 0,
+        monthProfit: monthGrossProfitVal,
         monthExpenses: monthExpensesVal,
-        netProfit: monthRevenueVal - monthExpensesVal,
+        monthCourierCost: monthCourierCostVal,
+        monthReturnLoss,
+        monthReturnedOrders,
+        netProfit,
+        codCashPending: codPendingAgg[0]?.pending ?? 0,
         outstandingAmount: outstandingAgg[0]?.total ?? 0,
         outstandingCount: outstandingAgg[0]?.count ?? 0,
         lowStockCount,

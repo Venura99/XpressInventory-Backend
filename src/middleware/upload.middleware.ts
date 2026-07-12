@@ -18,6 +18,29 @@ export const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
+const EXCEL_MIME_TYPES = [
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+];
+
+const excelFileFilter = (
+  _req: Express.Request,
+  file: Express.Multer.File,
+  cb: multer.FileFilterCallback
+) => {
+  if (EXCEL_MIME_TYPES.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new AppError('Only .xlsx or .xls files are allowed', 400));
+  }
+};
+
+export const excelUpload = multer({
+  storage,
+  fileFilter: excelFileFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
 export const uploadToCloudinary = async (
   buffer: Buffer,
   folder: string

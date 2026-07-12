@@ -32,7 +32,7 @@ export const env = {
     max: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
   },
 
-  allowedOrigins: (process.env.ALLOWED_ORIGINS || 'http://localhost:4200').split(','),
+  allowedOrigins: (process.env.ALLOWED_ORIGINS || 'http://localhost:4200,http://localhost:3000').split(','),
 
   isDev: process.env.NODE_ENV === 'development',
   isProd: process.env.NODE_ENV === 'production',

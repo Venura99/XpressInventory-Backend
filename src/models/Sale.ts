@@ -32,6 +32,8 @@ export interface ISale extends Document {
   notes?: string;
   soldBy: Types.ObjectId;
   saleDate: Date;
+  isReturned: boolean;
+  returnedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -85,6 +87,8 @@ const saleSchema = new Schema<ISale>(
     notes: { type: String, trim: true },
     soldBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     saleDate: { type: Date, default: Date.now, index: true },
+    isReturned: { type: Boolean, default: false, index: true },
+    returnedAt: { type: Date },
   },
   { timestamps: true }
 );

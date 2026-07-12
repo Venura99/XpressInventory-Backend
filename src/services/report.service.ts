@@ -8,39 +8,81 @@ class ReportService {
   // ── P&L ──────────────────────────────────────────────────────────────────────
 
   async getPnLReport(dateFrom: Date, dateTo: Date) {
-    const salesMatch = { saleDate: { $gte: dateFrom, $lte: dateTo } };
+    const salesMatch = { saleDate: { $gte: dateFrom, $lte: dateTo }, isReturned: false };
+    const returnedSalesMatch = { saleDate: { $gte: dateFrom, $lte: dateTo }, isReturned: true };
     const expenseMatch = { date: { $gte: dateFrom, $lte: dateTo } };
+    const deliveryMatch = { createdAt: { $gte: dateFrom, $lte: dateTo } };
+    const returnedDeliveryMatch = { createdAt: { $gte: dateFrom, $lte: dateTo }, status: 'returned' };
+    const remittedMatch = { remittedDate: { $gte: dateFrom, $lte: dateTo } };
 
-    const [salesAgg, expensesAgg] = await Promise.all([
-      Sale.aggregate([
-        { $match: salesMatch },
-        {
-          $group: {
-            _id: null,
-            revenue: { $sum: '$totalAmount' },
-            cost: { $sum: '$totalCost' },
-            grossProfit: { $sum: '$totalProfit' },
-            orders: { $sum: 1 },
-            avgOrderValue: { $avg: '$totalAmount' },
+    const [salesAgg, expensesAgg, courierAgg, returnedSalesAgg, returnedDeliveryAgg, codPendingAgg, codRemittedAgg] =
+      await Promise.all([
+        Sale.aggregate([
+          { $match: salesMatch },
+          {
+            $group: {
+              _id: null,
+              revenue: { $sum: '$totalAmount' },
+              cost: { $sum: '$totalCost' },
+              grossProfit: { $sum: '$totalProfit' },
+              orders: { $sum: 1 },
+              avgOrderValue: { $avg: '$totalAmount' },
+            },
           },
-        },
-      ]),
-      Expense.aggregate([
-        { $match: expenseMatch },
-        {
-          $group: {
-            _id: '$category',
-            total: { $sum: '$amount' },
-            count: { $sum: 1 },
+        ]),
+        Expense.aggregate([
+          { $match: expenseMatch },
+          {
+            $group: {
+              _id: '$category',
+              total: { $sum: '$amount' },
+              count: { $sum: 1 },
+            },
           },
-        },
-        { $sort: { total: -1 } },
-      ]),
-    ]);
+          { $sort: { total: -1 } },
+        ]),
+        Delivery.aggregate([
+          { $match: deliveryMatch },
+          { $group: { _id: null, total: { $sum: '$actualCourierCost' } } },
+        ]),
+        Sale.aggregate([
+          { $match: returnedSalesMatch },
+          { $group: { _id: null, lostRevenue: { $sum: '$totalAmount' }, count: { $sum: 1 } } },
+        ]),
+        Delivery.aggregate([
+          { $match: returnedDeliveryMatch },
+          { $group: { _id: null, shippingLoss: { $sum: '$returnShippingCost' } } },
+        ]),
+        Delivery.aggregate([
+          { $match: { isCOD: true, remittanceStatus: { $in: ['pending', 'partial'] } } },
+          {
+            $group: {
+              _id: null,
+              pending: { $sum: { $subtract: ['$codAmountExpected', '$codAmountRemitted'] } },
+            },
+          },
+        ]),
+        Delivery.aggregate([
+          { $match: { isCOD: true, ...remittedMatch } },
+          { $group: { _id: null, remitted: { $sum: '$codAmountRemitted' }, deductions: { $sum: '$courierDeduction' } } },
+        ]),
+      ]);
 
     const s = salesAgg[0] ?? { revenue: 0, cost: 0, grossProfit: 0, orders: 0, avgOrderValue: 0 };
     const expenseTotal = (expensesAgg as { total: number }[]).reduce((acc, e) => acc + e.total, 0);
-    const netProfit = s.grossProfit - expenseTotal;
+    const courierCostsPaid = courierAgg[0]?.total ?? 0;
+    const returns = {
+      count: returnedSalesAgg[0]?.count ?? 0,
+      lostRevenue: returnedSalesAgg[0]?.lostRevenue ?? 0,
+      shippingLoss: returnedDeliveryAgg[0]?.shippingLoss ?? 0,
+    };
+    const cod = {
+      pending: codPendingAgg[0]?.pending ?? 0,
+      remittedThisPeriod: codRemittedAgg[0]?.remitted ?? 0,
+      totalDeductions: codRemittedAgg[0]?.deductions ?? 0,
+    };
+
+    const netProfit = s.grossProfit - courierCostsPaid - returns.shippingLoss - expenseTotal;
 
     return {
       sales: {
@@ -58,6 +100,9 @@ class ReportService {
           count: e.count,
         })),
       },
+      courierCosts: courierCostsPaid,
+      returns,
+      cod,
       netProfit,
       grossMargin: s.revenue > 0 ? (s.grossProfit / s.revenue) * 100 : 0,
       netMargin: s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0,
@@ -67,7 +112,7 @@ class ReportService {
   // ── Sales breakdown ───────────────────────────────────────────────────────────
 
   async getSalesReport(dateFrom: Date, dateTo: Date) {
-    const match = { saleDate: { $gte: dateFrom, $lte: dateTo } };
+    const match = { saleDate: { $gte: dateFrom, $lte: dateTo }, isReturned: false };
 
     const [paymentBreakdown, topProducts, topCustomers, dailyTrend] = await Promise.all([
       Sale.aggregate([

@@ -6,20 +6,24 @@ import {
   createDeliveryValidator,
   updateDeliveryValidator,
   updateStatusValidator,
+  recordRemittanceValidator,
 } from '../validators/delivery.validator';
 import {
   getDeliveries,
   getDelivery,
+  getCodSummary,
   createDelivery,
   updateDelivery,
   updateDeliveryStatus,
+  recordRemittance,
   deleteDelivery,
 } from '../controllers/delivery.controller';
 
-const router = Router(); 
+const router = Router();
 
 router.use(authenticate);
 
+router.get('/cod/summary', authorize('admin', 'partner'), getCodSummary);
 router.get('/', getDeliveries);
 router.get('/:id', getDelivery);
 
@@ -31,6 +35,13 @@ router.patch(
   updateStatusValidator,
   validate,
   updateDeliveryStatus
+);
+router.patch(
+  '/:id/remittance',
+  authorize('admin', 'partner'),
+  recordRemittanceValidator,
+  validate,
+  recordRemittance
 );
 router.delete('/:id', authorize('admin'), deleteDelivery);
 
