@@ -28,6 +28,7 @@ const TEMPLATE_COLUMNS: { header: string; key: string; width: number }[] = [
   { header: 'Product SKU', key: 'productSku', width: 16 },
   { header: 'Quantity', key: 'quantity', width: 10 },
   { header: 'Unit Price', key: 'unitPrice', width: 12 },
+  { header: 'Cost Price', key: 'costPrice', width: 12 },
   { header: 'Discount', key: 'discount', width: 12 },
   { header: 'Delivery Fee', key: 'deliveryFee', width: 12 },
   { header: 'Free Delivery (Y/N)', key: 'freeDelivery', width: 16 },
@@ -48,6 +49,7 @@ interface RawImportRow {
   productSku?: string;
   quantity?: string;
   unitPrice?: string;
+  costPrice?: string;
   discount?: string;
   deliveryFee?: string;
   freeDelivery?: string;
@@ -106,14 +108,15 @@ class ImportService {
       customerAddress: '123 Galle Road, Colombo',
       productSku: 'PRD-0001',
       quantity: 1,
-      unitPrice: '',
+      unitPrice: 1500,
+      costPrice: '',
       discount: '',
       deliveryFee: '',
       freeDelivery: 'N',
       paymentMethod: 'cash',
       paymentStatus: 'paid',
       amountPaid: '',
-      saleDate: '',
+      saleDate: '2026-01-15',
       notes: '',
     });
 
@@ -181,6 +184,8 @@ class ImportService {
     if (!raw.customerPhone) missing.push('Customer Phone');
     if (!raw.productSku) missing.push('Product SKU');
     if (!raw.quantity) missing.push('Quantity');
+    if (!raw.unitPrice) missing.push('Unit Price');
+    if (!raw.saleDate) missing.push('Sale Date');
     if (missing.length > 0) {
       return { row: raw.row, status: 'skipped', error: `Missing required field(s): ${missing.join(', ')}` };
     }
@@ -188,6 +193,19 @@ class ImportService {
     const quantity = Number(raw.quantity);
     if (!Number.isFinite(quantity) || quantity < 1) {
       return { row: raw.row, status: 'skipped', error: `Invalid Quantity: "${raw.quantity}"` };
+    }
+
+    const unitPrice = Number(raw.unitPrice);
+    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+      return { row: raw.row, status: 'skipped', error: `Invalid Unit Price: "${raw.unitPrice}"` };
+    }
+
+    let costPrice: number | undefined;
+    if (raw.costPrice) {
+      costPrice = Number(raw.costPrice);
+      if (!Number.isFinite(costPrice) || costPrice < 0) {
+        return { row: raw.row, status: 'skipped', error: `Invalid Cost Price: "${raw.costPrice}"` };
+      }
     }
 
     const sku = raw.productSku!.trim().toUpperCase();
@@ -232,7 +250,8 @@ class ImportService {
         {
           product: String(product._id),
           quantity,
-          unitPrice: raw.unitPrice ? Number(raw.unitPrice) : undefined,
+          unitPrice,
+          costPrice,
           discount: raw.discount ? Number(raw.discount) : undefined,
         },
       ],

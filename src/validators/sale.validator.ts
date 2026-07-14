@@ -19,6 +19,7 @@ export const createSaleValidator = [
   body('items.*.product').isMongoId().withMessage('Valid product ID required for each item'),
   body('items.*.quantity').isInt({ min: 1 }).withMessage('Item quantity must be at least 1'),
   body('items.*.unitPrice').optional().isFloat({ min: 0 }).withMessage('Unit price must be >= 0'),
+  body('items.*.costPrice').optional().isFloat({ min: 0 }).withMessage('Cost price must be >= 0'),
   body('items.*.discount').optional().isFloat({ min: 0 }).withMessage('Item discount must be >= 0'),
 
   body('discountPercent')

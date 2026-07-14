@@ -12,6 +12,7 @@ export interface CreateSaleItemDto {
   product: string;
   quantity: number;
   unitPrice?: number;
+  costPrice?: number;
   discount?: number;
 }
 
@@ -77,16 +78,17 @@ export class SaleService {
         }
 
         const unitPrice = item.unitPrice ?? product.sellingPrice;
+        const costPrice = item.costPrice ?? product.costPrice;
         const discount = item.discount ?? 0;
         const itemSubtotal = (unitPrice - discount) * item.quantity;
-        const itemCost = product.costPrice * item.quantity;
+        const itemCost = costPrice * item.quantity;
 
         processedItems.push({
           product: product._id,
           productName: product.name,
           sku: product.sku,
           quantity: item.quantity,
-          costPrice: product.costPrice,
+          costPrice,
           unitPrice,
           discount,
           subtotal: itemSubtotal,
