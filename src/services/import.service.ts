@@ -20,6 +20,7 @@ function styleHeaderRow(row: ExcelJS.Row): void {
 }
 
 const TEMPLATE_COLUMNS: { header: string; key: string; width: number }[] = [
+  { header: 'Order ID', key: 'orderId', width: 12 },
   { header: 'Customer Name', key: 'customerName', width: 22 },
   { header: 'Customer Phone', key: 'customerPhone', width: 16 },
   { header: 'Customer WhatsApp', key: 'customerWhatsapp', width: 16 },
@@ -41,6 +42,7 @@ const TEMPLATE_COLUMNS: { header: string; key: string; width: number }[] = [
 
 interface RawImportRow {
   row: number;
+  orderId?: string;
   customerName?: string;
   customerPhone?: string;
   customerWhatsapp?: string;
@@ -62,6 +64,7 @@ interface RawImportRow {
 
 export interface SaleImportRowResult {
   row: number;
+  rows?: number[];
   status: 'created' | 'skipped';
   invoiceNumber?: string;
   customerName?: string;
@@ -101,6 +104,7 @@ class ImportService {
     styleHeaderRow(sheet.getRow(1));
 
     sheet.addRow({
+      orderId: '',
       customerName: 'Kasun Perera',
       customerPhone: '0771234567',
       customerWhatsapp: '0771234567',
@@ -117,6 +121,52 @@ class ImportService {
       paymentStatus: 'paid',
       amountPaid: '',
       saleDate: '2026-01-15',
+      notes: '',
+    });
+
+    // Combo example: two rows sharing the same Order ID become ONE sale with two
+    // real line items, so stock is deducted from each actual product SKU —
+    // no separate "combo" product needed. Only the first row of a group carries
+    // the sale-level fields (delivery fee, payment info, etc.); leave those blank
+    // on the following rows.
+    sheet.addRow({
+      orderId: 'COMBO-1',
+      customerName: 'Nimal Silva',
+      customerPhone: '0779876543',
+      customerWhatsapp: '',
+      customerEmail: '',
+      customerAddress: '45 Kandy Road, Kegalle',
+      productSku: 'PRD-0001',
+      quantity: 1,
+      unitPrice: 1100,
+      costPrice: 475,
+      discount: '',
+      deliveryFee: 276,
+      freeDelivery: 'Y',
+      paymentMethod: 'cash',
+      paymentStatus: 'paid',
+      amountPaid: '',
+      saleDate: '2026-01-15',
+      notes: 'Combo deal',
+    });
+    sheet.addRow({
+      orderId: 'COMBO-1',
+      customerName: '',
+      customerPhone: '',
+      customerWhatsapp: '',
+      customerEmail: '',
+      customerAddress: '',
+      productSku: 'PRD-0002',
+      quantity: 1,
+      unitPrice: 900,
+      costPrice: 650,
+      discount: '',
+      deliveryFee: '',
+      freeDelivery: '',
+      paymentMethod: '',
+      paymentStatus: '',
+      amountPaid: '',
+      saleDate: '',
       notes: '',
     });
 
@@ -157,17 +207,48 @@ class ImportService {
     return rows;
   }
 
-  async importSales(buffer: Buffer, userId: string): Promise<SaleImportSummary> {
-    const rows = await this.parseImportRows(buffer);
-    const results: SaleImportRowResult[] = [];
+  /**
+   * Rows are grouped by a non-empty "Order ID" so a combo/bundle (multiple real
+   * product SKUs sold together) becomes one Sale with one line item per SKU —
+   * each SKU's own stock is deducted, rather than requiring a separate combo
+   * product to exist. Rows with no Order ID each form their own single-item sale
+   * (original behaviour), so existing sheets keep working unchanged.
+   */
+  private groupRows(rows: RawImportRow[]): RawImportRow[][] {
+    const groups: RawImportRow[][] = [];
+    const groupIndexByOrderId = new Map<string, number>();
 
     for (const raw of rows) {
+      const orderId = raw.orderId?.trim();
+      if (orderId) {
+        const key = orderId.toUpperCase();
+        const existingIndex = groupIndexByOrderId.get(key);
+        if (existingIndex !== undefined) {
+          groups[existingIndex].push(raw);
+          continue;
+        }
+        groupIndexByOrderId.set(key, groups.length);
+      }
+      groups.push([raw]);
+    }
+
+    return groups;
+  }
+
+  async importSales(buffer: Buffer, userId: string): Promise<SaleImportSummary> {
+    const rows = await this.parseImportRows(buffer);
+    const groups = this.groupRows(rows);
+    const results: SaleImportRowResult[] = [];
+
+    for (const group of groups) {
+      const rowNumbers = group.map((r) => r.row);
       try {
-        const result = await this.importRow(raw, userId);
+        const result = await this.importGroup(group, userId);
         results.push(result);
       } catch (error) {
         results.push({
-          row: raw.row,
+          row: rowNumbers[0],
+          rows: rowNumbers.length > 1 ? rowNumbers : undefined,
           status: 'skipped',
           error: error instanceof Error ? error.message : 'Unknown error',
         });
@@ -175,97 +256,180 @@ class ImportService {
     }
 
     const created = results.filter((r) => r.status === 'created').length;
-    return { totalRows: rows.length, created, skipped: rows.length - created, results };
+    return { totalRows: rows.length, created, skipped: results.length - created, results };
   }
 
-  private async importRow(raw: RawImportRow, userId: string): Promise<SaleImportRowResult> {
+  private async importGroup(group: RawImportRow[], userId: string): Promise<SaleImportRowResult> {
+    const first = group[0];
+    const rowNumbers = group.map((r) => r.row);
+    const rowsSuffix = rowNumbers.length > 1 ? ` (rows ${rowNumbers.join(', ')})` : '';
+
     const missing: string[] = [];
-    if (!raw.customerName) missing.push('Customer Name');
-    if (!raw.customerPhone) missing.push('Customer Phone');
-    if (!raw.productSku) missing.push('Product SKU');
-    if (!raw.quantity) missing.push('Quantity');
-    if (!raw.unitPrice) missing.push('Unit Price');
-    if (!raw.saleDate) missing.push('Sale Date');
+    if (!first.customerName) missing.push('Customer Name');
+    if (!first.customerPhone) missing.push('Customer Phone');
+    if (!first.saleDate) missing.push('Sale Date');
     if (missing.length > 0) {
-      return { row: raw.row, status: 'skipped', error: `Missing required field(s): ${missing.join(', ')}` };
+      return {
+        row: rowNumbers[0],
+        rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+        status: 'skipped',
+        error: `Row ${rowNumbers[0]}: missing required field(s): ${missing.join(', ')}`,
+      };
     }
 
-    const quantity = Number(raw.quantity);
-    if (!Number.isFinite(quantity) || quantity < 1) {
-      return { row: raw.row, status: 'skipped', error: `Invalid Quantity: "${raw.quantity}"` };
-    }
+    const items: { product: string; quantity: number; unitPrice: number; costPrice?: number; discount?: number }[] = [];
 
-    const unitPrice = Number(raw.unitPrice);
-    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
-      return { row: raw.row, status: 'skipped', error: `Invalid Unit Price: "${raw.unitPrice}"` };
-    }
-
-    let costPrice: number | undefined;
-    if (raw.costPrice) {
-      costPrice = Number(raw.costPrice);
-      if (!Number.isFinite(costPrice) || costPrice < 0) {
-        return { row: raw.row, status: 'skipped', error: `Invalid Cost Price: "${raw.costPrice}"` };
+    for (const raw of group) {
+      if (raw !== first && raw.customerPhone && raw.customerPhone.trim() !== first.customerPhone!.trim()) {
+        return {
+          row: rowNumbers[0],
+          rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+          status: 'skipped',
+          error: `Order ID "${first.orderId}" has mismatched Customer Phone between row ${first.row} and row ${raw.row}`,
+        };
       }
+
+      if (!raw.productSku) {
+        return {
+          row: rowNumbers[0],
+          rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+          status: 'skipped',
+          error: `Row ${raw.row}: missing required field(s): Product SKU`,
+        };
+      }
+      if (!raw.quantity) {
+        return {
+          row: rowNumbers[0],
+          rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+          status: 'skipped',
+          error: `Row ${raw.row}: missing required field(s): Quantity`,
+        };
+      }
+      if (!raw.unitPrice) {
+        return {
+          row: rowNumbers[0],
+          rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+          status: 'skipped',
+          error: `Row ${raw.row}: missing required field(s): Unit Price`,
+        };
+      }
+
+      const quantity = Number(raw.quantity);
+      if (!Number.isFinite(quantity) || quantity < 1) {
+        return {
+          row: rowNumbers[0],
+          rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+          status: 'skipped',
+          error: `Row ${raw.row}: invalid Quantity: "${raw.quantity}"`,
+        };
+      }
+
+      const unitPrice = Number(raw.unitPrice);
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        return {
+          row: rowNumbers[0],
+          rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+          status: 'skipped',
+          error: `Row ${raw.row}: invalid Unit Price: "${raw.unitPrice}"`,
+        };
+      }
+
+      let costPrice: number | undefined;
+      if (raw.costPrice) {
+        costPrice = Number(raw.costPrice);
+        if (!Number.isFinite(costPrice) || costPrice < 0) {
+          return {
+            row: rowNumbers[0],
+            rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+            status: 'skipped',
+            error: `Row ${raw.row}: invalid Cost Price: "${raw.costPrice}"`,
+          };
+        }
+      }
+
+      const sku = raw.productSku.trim().toUpperCase();
+      const product = await Product.findOne({ sku, isActive: true });
+      if (!product) {
+        return {
+          row: rowNumbers[0],
+          rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+          status: 'skipped',
+          error: `Row ${raw.row}: Product SKU "${sku}" not found or inactive`,
+        };
+      }
+
+      items.push({
+        product: String(product._id),
+        quantity,
+        unitPrice,
+        costPrice,
+        discount: raw.discount ? Number(raw.discount) : undefined,
+      });
     }
 
-    const sku = raw.productSku!.trim().toUpperCase();
-    const product = await Product.findOne({ sku, isActive: true });
-    if (!product) {
-      return { row: raw.row, status: 'skipped', error: `Product SKU "${sku}" not found or inactive` };
-    }
-
-    const phone = raw.customerPhone!.trim();
+    const phone = first.customerPhone!.trim();
     const existingCustomer = await Customer.findOne({ phone, isActive: true });
     const customer = existingCustomer
       ? existingCustomer
       : await customerService.create({
-          name: raw.customerName!.trim(),
+          name: first.customerName!.trim(),
           phone,
-          whatsapp: raw.customerWhatsapp?.trim(),
-          email: raw.customerEmail?.trim(),
-          address: raw.customerAddress?.trim(),
+          whatsapp: first.customerWhatsapp?.trim(),
+          email: first.customerEmail?.trim(),
+          address: first.customerAddress?.trim(),
           createdBy: userId,
         });
 
-    const paymentMethod = raw.paymentMethod?.trim().toLowerCase();
+    const paymentMethod = first.paymentMethod?.trim().toLowerCase();
     if (paymentMethod && !PAYMENT_METHODS.includes(paymentMethod)) {
-      return { row: raw.row, status: 'skipped', error: `Invalid Payment Method: "${raw.paymentMethod}"` };
+      return {
+        row: rowNumbers[0],
+        rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+        status: 'skipped',
+        error: `Row ${first.row}: invalid Payment Method: "${first.paymentMethod}"`,
+      };
     }
 
-    const paymentStatus = raw.paymentStatus?.trim().toLowerCase();
+    const paymentStatus = first.paymentStatus?.trim().toLowerCase();
     if (paymentStatus && !PAYMENT_STATUSES.includes(paymentStatus)) {
-      return { row: raw.row, status: 'skipped', error: `Invalid Payment Status: "${raw.paymentStatus}"` };
+      return {
+        row: rowNumbers[0],
+        rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+        status: 'skipped',
+        error: `Row ${first.row}: invalid Payment Status: "${first.paymentStatus}"`,
+      };
     }
 
-    if (raw.saleDate) {
-      const parsed = new Date(raw.saleDate);
-      if (isNaN(parsed.getTime())) {
-        return { row: raw.row, status: 'skipped', error: `Invalid Sale Date: "${raw.saleDate}"` };
-      }
+    const parsedSaleDate = new Date(first.saleDate!);
+    if (isNaN(parsedSaleDate.getTime())) {
+      return {
+        row: rowNumbers[0],
+        rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+        status: 'skipped',
+        error: `Row ${first.row}: invalid Sale Date: "${first.saleDate}"${rowsSuffix}`,
+      };
     }
 
     const dto: CreateSaleDto = {
       customer: String(customer._id),
-      items: [
-        {
-          product: String(product._id),
-          quantity,
-          unitPrice,
-          costPrice,
-          discount: raw.discount ? Number(raw.discount) : undefined,
-        },
-      ],
-      deliveryFee: raw.deliveryFee ? Number(raw.deliveryFee) : undefined,
-      isFreeDelivery: raw.freeDelivery?.trim().toUpperCase() === 'Y',
+      items,
+      deliveryFee: first.deliveryFee ? Number(first.deliveryFee) : undefined,
+      isFreeDelivery: first.freeDelivery?.trim().toUpperCase() === 'Y',
       paymentMethod: paymentMethod as CreateSaleDto['paymentMethod'],
       paymentStatus: paymentStatus as CreateSaleDto['paymentStatus'],
-      amountPaid: raw.amountPaid ? Number(raw.amountPaid) : undefined,
-      notes: raw.notes?.trim(),
-      saleDate: raw.saleDate?.trim(),
+      amountPaid: first.amountPaid ? Number(first.amountPaid) : undefined,
+      notes: first.notes?.trim(),
+      saleDate: first.saleDate?.trim(),
     };
 
     const sale = await saleService.createSale(dto, userId);
-    return { row: raw.row, status: 'created', invoiceNumber: sale.invoiceNumber, customerName: customer.name };
+    return {
+      row: rowNumbers[0],
+      rows: rowNumbers.length > 1 ? rowNumbers : undefined,
+      status: 'created',
+      invoiceNumber: sale.invoiceNumber,
+      customerName: customer.name,
+    };
   }
 }
 
